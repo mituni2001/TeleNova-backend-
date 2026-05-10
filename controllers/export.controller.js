@@ -142,33 +142,52 @@ exports.exportMSAN = async (req, res) => {
 };
 
 
-/* ── RSU EXPORT  GET /api/export/rsu ───────────────────────── */
+
+// ── Helper functions ──
+const fmt = (val) => (val !== undefined && val !== null ? String(val) : "—");
+const fmtDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : "—");
+const fmtBool = (val) => (val === true ? "Yes" : val === false ? "No" : "—");
+const loadPct = (dcLoad, capacity) => {
+  const dc = Number(dcLoad), cap = Number(capacity);
+  if (!cap || cap === 0) return "0.0";
+  return ((dc / cap) * 100).toFixed(1);
+};
+
+// ── Workbook sender ──
+const sendWorkbook = async (res, wb, filename) => {
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  await wb.xlsx.write(res);
+  res.end();
+};
+
+/* ── RSU EXPORT (template match) ──────────── */
 exports.exportRSU = async (_req, res) => {
   try {
     console.log("📊 RSU export started");
     const records = await RSU.find().sort({ createdAt: -1 }).lean();
     console.log(`   Found ${records.length} RSU records`);
 
-    const wb   = new ExcelJS.Workbook();
+    const wb = new ExcelJS.Workbook();
     wb.creator = "TeleNova";
     wb.created = new Date();
-    const ws   = wb.addWorksheet("RSU Data", {
+    const ws = wb.addWorksheet("RSU Data", {
       views: [{ state: "frozen", ySplit: 2 }],
     });
 
-    /* Row 1: group headers */
+    // Group headers (row 1)
     const groups = [
       { label: "RSU Name",            cols: 1,  color: "FF1A3A6B" },
-      { label: "Primary Rectifier",   cols: 11, color: "FF1E4E7A" },
-      { label: "Secondary Rectifier", cols: 11, color: "FF1A3A6B" },
+      { label: "Primary Rectifier",   cols: 12, color: "FF1E4E7A" },
+      { label: "Secondary Rectifier", cols: 12, color: "FF1A3A6B" },
       { label: "Battery Bank 1",      cols: 6,  color: "FF2E6B4F" },
       { label: "Battery Bank 2",      cols: 6,  color: "FF256040" },
-      { label: "Battery Bank 3",      cols: 6,  color: "FF1D5035" },
-      { label: "Battery Bank 4",      cols: 6,  color: "FF164028" },
+      { label: "Battery Bank 3",      cols: 5,  color: "FF1D5035" },
+      { label: "Battery Bank 4",      cols: 5,  color: "FF164028" },
       { label: "AC Unit 1",           cols: 4,  color: "FF6B3A1A" },
       { label: "AC Unit 2",           cols: 4,  color: "FF5A3015" },
       { label: "AC Unit 3",           cols: 4,  color: "FF49260F" },
-      { label: "Generator",           cols: 5,  color: "FF4A1A5A" },
+      { label: "Generator",           cols: 4,  color: "FF4A1A5A" },
       { label: "AC Load",             cols: 4,  color: "FF1A3A5A" },
     ];
 
@@ -187,32 +206,45 @@ exports.exportRSU = async (_req, res) => {
       col += g.cols;
     }
 
-    /* Row 2: sub-headers */
-    const rectSH = [
-      "Rect Type", "Installed Date", "Module Type",
-      "Working", "Faulty", "Total Modules",
-      "Capacity (A)", "DC Load (A)", "Load %", "Phase", "Connected Nodes",
-    ];
-    const bbSH = ["Brand", "Type", "Voltage", "Capacity (Ah)", "Connected Rect", "Health"];
-    const acSH = ["Type", "Inverter", "BTU/h", "Health"];
-
+    // Sub-headers (row 2)
     const subHeaders = [
       "RSU Name",
-      ...rectSH, ...rectSH,
-      ...bbSH, ...bbSH, ...bbSH, ...bbSH,
-      ...acSH, ...acSH, ...acSH,
-      "Model", "Capacity", "Brand", "ATS", "Available",
-      "Ph1 (A)", "Ph2 (A)", "Ph3 (A)", "Neutral (A)",
+      // Primary Rectifier (12)
+      "Rectifier Type","Installed Date","Module Type",
+      "Working module Count","Faulty Module count",
+      "Module Capacity","DC Load (A)","Phase",
+      "Connected Node 1","Connected Node 2","Connected Node 3","Connected Node 4",
+      // Secondary Rectifier (12)
+      "Rectifier Type","Installed Date","Module Type",
+      "Working module Count","Faulty Module count",
+      "Module Capacity","DC Load (A)","Phase",
+      "Connected Node 1","Connected Node 2","Connected Node 3","Connected Node 4",
+      // Battery Bank 1 (6)
+      "Brand Name","Battery Type","battery voltage","Capacity","Connected Rectifier","Health",
+      // Battery Bank 2 (6)
+      "Brand Name","Battery Type","battery voltage","Capacity","Connected Rectifier","Health",
+      // Battery Bank 3 (5 – no Brand)
+      "Battery Type","battery voltage","Capacity","Connected Rectifier","Health",
+      // Battery Bank 4 (5)
+      "Battery Type","battery voltage","Capacity","Connected Rectifier","Health",
+      // AC Units (3×4)
+      "Type","Inverter","Btu/h","Health",
+      "Type","Inverter","Btu/h","Health",
+      "Type","Inverter","Btu/h","Health",
+      // Generator (4)
+      "Model","Capasity","Brand","ATS Available",
+      // AC Load (4)
+      "Ph1","Ph2","Ph3","N",
     ];
 
     const shColors = [
       "FF2D6A9F",
-      ...Array(11).fill("FF1E4E7A"), ...Array(11).fill("FF1A3A6B"),
+      ...Array(12).fill("FF1E4E7A"), ...Array(12).fill("FF1A3A6B"),
       ...Array(6).fill("FF2E6B4F"),  ...Array(6).fill("FF256040"),
-      ...Array(6).fill("FF1D5035"),  ...Array(6).fill("FF164028"),
+      ...Array(5).fill("FF1D5035"),  ...Array(5).fill("FF164028"),
       ...Array(4).fill("FF6B3A1A"),  ...Array(4).fill("FF5A3015"),
       ...Array(4).fill("FF49260F"),
-      ...Array(5).fill("FF4A1A5A"),
+      ...Array(4).fill("FF4A1A5A"),
       ...Array(4).fill("FF1A3A5A"),
     ];
 
@@ -231,52 +263,53 @@ exports.exportRSU = async (_req, res) => {
     ws.getRow(1).height = 22;
     ws.getRow(2).height = 36;
 
-    /* data row helpers */
+    // Data helpers
     const rectCols = (r) => {
-      if (!r) return Array(11).fill("—");
-      const total = (r.modules?.working || 0) + (r.modules?.faulty || 0);
+      if (!r) return Array(12).fill("—");
+      const nodes = r.connectedNodes || ["", "", "", ""];
       return [
         fmt(r.type), fmtDate(r.installedDate), fmt(r.moduleType),
-        r.modules?.working ?? "—", r.modules?.faulty ?? "—",
-        total || "—", r.capacity ?? "—", r.dcLoad ?? "—",
-        loadPct(r.dcLoad, r.capacity), fmt(r.phase),
-        (r.connectedNodes || []).filter(Boolean).join(" / ") || "—",
+        fmt(r.modules?.working), fmt(r.modules?.faulty),
+        fmt(r.capacity), fmt(r.dcLoad), fmt(r.phase),
+        fmt(nodes[0]), fmt(nodes[1]), fmt(nodes[2]), fmt(nodes[3]),
       ];
     };
 
-    const bankCols = (b) => {
-      if (!b || !b.brand) return Array(6).fill("—");
-      return [fmt(b.brand), fmt(b.batteryType), fmt(b.voltage),
-              b.ah || "—", fmt(b.connectedRectifier), fmt(b.health)];
+    const bankCols = (b, idx) => {
+      if (!b) return idx <= 2 ? Array(6).fill("—") : Array(5).fill("—");
+      if (idx <= 2) {
+        return [fmt(b.brand), fmt(b.batteryType), fmt(b.voltage), fmt(b.ah), fmt(b.connectedRectifier), fmt(b.health)];
+      } else {
+        return [fmt(b.batteryType), fmt(b.voltage), fmt(b.ah), fmt(b.connectedRectifier), fmt(b.health)];
+      }
     };
 
     const acCols = (u) => {
       if (!u || !u.type) return Array(4).fill("—");
-      return [fmt(u.type), fmtBool(u.inverter), u.btu || "—", fmt(u.health)];
+      return [fmt(u.type), fmtBool(u.inverter), fmt(u.btu), fmt(u.health)];
     };
 
-    /* data rows */
     records.forEach((rec, rowIdx) => {
       const bb = rec.batteryBanks || [];
-      const au = rec.acUnits      || [];
-      const gn = rec.generator    || {};
-      const al = rec.acLoad       || {};
+      const au = rec.acUnits || [];
+      const gn = rec.generator || {};
+      const al = rec.acLoad || {};
 
       const rowData = [
         rec.rsuName,
         ...rectCols(rec.primaryRectifier),
         ...rectCols(rec.secondaryRectifier),
-        ...bankCols(bb[0]), ...bankCols(bb[1]),
-        ...bankCols(bb[2]), ...bankCols(bb[3]),
-        ...acCols(au[0]),   ...acCols(au[1]),  ...acCols(au[2]),
+        ...bankCols(bb[0],1), ...bankCols(bb[1],2),
+        ...bankCols(bb[2],3), ...bankCols(bb[3],4),
+        ...acCols(au[0]), ...acCols(au[1]), ...acCols(au[2]),
         fmt(gn.model), fmt(gn.capacity), fmt(gn.brand),
-        fmtBool(gn.ats), fmtBool(gn.available),
+        fmtBool(gn.ats),
         fmt(al.phase1), fmt(al.phase2), fmt(al.phase3), fmt(al.neutral),
       ];
 
       const row = ws.addRow(rowData);
       row.height = 18;
-      const bg   = rowIdx % 2 === 0 ? "FFF0F4FA" : "FFFFFFFF";
+      const bg = rowIdx % 2 === 0 ? "FFF0F4FA" : "FFFFFFFF";
       row.eachCell({ includeEmpty: true }, (cell) => {
         cell.fill      = { type: "pattern", pattern: "solid", fgColor: { argb: bg } };
         cell.font      = { size: 10 };
@@ -286,25 +319,25 @@ exports.exportRSU = async (_req, res) => {
           bottom: { style: "hair" }, right: { style: "hair" },
         };
       });
-      const nc     = row.getCell(1);
+      const nc = row.getCell(1);
       nc.font      = { bold: true, size: 10 };
       nc.alignment = { vertical: "middle", horizontal: "left" };
     });
 
-    /* column widths */
+    // Column widths
     [
       22,
-      16, 12, 14, 8, 8, 8, 10, 10, 8, 12, 30,
-      16, 12, 14, 8, 8, 8, 10, 10, 8, 12, 30,
-      12, 10, 8, 10, 16, 8,
-      12, 10, 8, 10, 16, 8,
-      12, 10, 8, 10, 16, 8,
-      12, 10, 8, 10, 16, 8,
-      16, 8, 10, 8,
-      16, 8, 10, 8,
-      16, 8, 10, 8,
-      14, 10, 12, 6, 6,
-      8, 8, 8, 8,
+      16,12,14,10,10,12,10,12,12,12,12,12,
+      16,12,14,10,10,12,10,12,12,12,12,12,
+      12,10,8,10,16,8,
+      12,10,8,10,16,8,
+      10,8,10,16,8,
+      10,8,10,16,8,
+      14,8,10,8,
+      14,8,10,8,
+      14,8,10,8,
+      14,10,12,12,
+      8,8,8,8,
     ].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
 
     await sendWorkbook(res, wb, "RSU_DATA.xlsx");
@@ -313,4 +346,4 @@ exports.exportRSU = async (_req, res) => {
     console.error("❌ RSU export error:", err);
     if (!res.headersSent) res.status(500).json({ error: err.message });
   }
-};   
+};
